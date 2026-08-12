@@ -4,29 +4,46 @@ import { useAuth } from '../../context/AuthContext';
 import CandidateCard from '../../components/CandidateCard';
 import Card from '../../components/Card';
 import StatusBadge from '../../components/StatusBadge';
-import Button from '../../components/Button';
 import toast from 'react-hot-toast';
 import { castVote as blockchainCastVote } from '../../services/blockchain';
 
 export default function UserDashboard() {
-  const { candidates, electionActive, userHasVoted, castVote } = useVoting();
-  const { user } = useAuth();
+  const { candidates, electionActive, castVote } = useVoting();
+  const { user, login } = useAuth();
   const [votingId, setVotingId] = useState(null);
 
   const handleVote = async (candidateId) => {
     setVotingId(candidateId);
     try {
-      await blockchainCastVote(candidateId, user?.email || 'user');
-      castVote(candidateId, user?.id);
-      toast.success('Vote cast successfully!');
-    } catch {
+      const walletAddr = user?.walletAddress || '0x0000000000000000000000000000000000000000';
+      
+      // Step 1: Execute Blockchain Smart Contract (mocked in blockchain service)
+      const txRes = await blockchainCastVote(candidateId, walletAddr);
+      
+      if (txRes.success) {
+        // Simulate a block number for verification log purposes
+        const mockBlockNumber = Math.floor(Math.random() * 500000) + 18000000;
+        
+        // Step 2: Log details to Express backend
+        const logRes = await castVote(candidateId, txRes.txHash, mockBlockNumber);
+        
+        if (logRes.success) {
+          // Step 3: Update local user state
+          login({ ...user, hasVoted: true });
+          toast.success('Vote successfully cast on-chain and verified!');
+        }
+      } else {
+        toast.error('Smart contract execution failed.');
+      }
+    } catch (err) {
+      console.error(err);
       toast.error('Failed to cast vote');
     } finally {
       setVotingId(null);
     }
   };
 
-  const hasVoted = userHasVoted(user?.id);
+  const hasVoted = user?.hasVoted;
   const canVote = electionActive && !hasVoted;
   const results = [...candidates].sort((a, b) => (b.votes || 0) - (a.votes || 0));
 

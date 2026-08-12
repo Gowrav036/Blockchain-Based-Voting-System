@@ -12,6 +12,7 @@ export const useAuth = () => {
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
+  const [pendingUser, setPendingUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -26,21 +27,25 @@ export const AuthProvider = ({ children }) => {
     setLoading(false);
   }, []);
 
-  const login = (userData) => {
+  const login = (userData, token) => {
     setUser(userData);
     localStorage.setItem('voting_user', JSON.stringify(userData));
+    if (token) {
+      localStorage.setItem('voting_jwt', token);
+    }
   };
 
   const logout = () => {
     setUser(null);
     localStorage.removeItem('voting_user');
+    localStorage.removeItem('voting_jwt');
   };
 
   const isAdmin = () => user?.role === 'admin';
   const isUser = () => user?.role === 'user';
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, loading, isAdmin, isUser }}>
+    <AuthContext.Provider value={{ user, pendingUser, setPendingUser, login, logout, loading, isAdmin, isUser }}>
       {children}
     </AuthContext.Provider>
   );

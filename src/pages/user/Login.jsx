@@ -1,27 +1,24 @@
 import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { useApprovedUsers } from '../../context/ApprovedUsersContext';
 import Button from '../../components/Button';
 import Card from '../../components/Card';
 import toast from 'react-hot-toast';
 
 export default function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [voterId, setVoterId] = useState('');
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
-  const { login } = useAuth();
-  const { verifyUser } = useApprovedUsers();
+  const { setPendingUser } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const from = location.state?.from?.pathname || '/dashboard';
 
   const validate = () => {
     const err = {};
-    if (!email.trim()) err.email = 'Email is required';
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) err.email = 'Invalid email format';
-    if (!password) err.password = 'Password is required';
+    if (!voterId.trim()) {
+      err.voterId = 'Voter ID is required';
+    }
     setErrors(err);
     return Object.keys(err).length === 0;
   };
@@ -32,17 +29,26 @@ export default function Login() {
 
     setLoading(true);
     try {
-      const result = verifyUser(email, password);
-      if (result.success) {
-        login({ id: result.user.id, name: result.user.name, email: result.user.email, role: 'user' });
-        toast.success('Login successful!');
-        navigate(from, { replace: true });
+      const response = await fetch('http://localhost:5000/api/auth/login-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voterId: voterId.trim() })
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        setPendingUser(data.user);
+        toast.success(`Voter ${data.user.name} identified! Proceeding to face verification.`);
+        navigate('/face-verification', { replace: true, state: { from } });
       } else {
-        toast.error(result.error || 'Invalid credentials');
-        setErrors({ submit: result.error });
+        toast.error(data.message || 'Invalid Voter ID or connection failure');
+        setErrors({ submit: data.message || 'Invalid Voter' });
       }
-    } catch {
-      toast.error('Login failed');
+    } catch (err) {
+      console.error(err);
+      toast.error('Connection to backend failed');
+      setErrors({ submit: 'Could not connect to voting backend' });
     } finally {
       setLoading(false);
     }
@@ -50,37 +56,26 @@ export default function Login() {
 
   return (
     <Card>
-      <h2 className="text-2xl font-bold text-white mb-6">User Login</h2>
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <h2 className="text-2xl font-bold text-white mb-6">Voter Login</h2>
+      <form onSubmit={handleSubmit} className="space-y-5">
         <div>
-          <label className="block text-sm font-medium text-slate-400 mb-1">Email</label>
+          <label className="block text-sm font-medium text-slate-400 mb-1.5">Voter ID</label>
           <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            type="text"
+            value={voterId}
+            onChange={(e) => setVoterId(e.target.value)}
             className="w-full px-4 py-2.5 rounded-lg bg-slate-800 border border-slate-600 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-            placeholder="you@example.com"
+            placeholder="Enter your Voter ID"
           />
-          {errors.email && <p className="text-red-400 text-sm mt-1">{errors.email}</p>}
+          {errors.voterId && <p className="text-red-400 text-sm mt-1">{errors.voterId}</p>}
         </div>
-        <div>
-          <label className="block text-sm font-medium text-slate-400 mb-1">Password</label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full px-4 py-2.5 rounded-lg bg-slate-800 border border-slate-600 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-            placeholder="••••••••"
-          />
-          {errors.password && <p className="text-red-400 text-sm mt-1">{errors.password}</p>}
-        </div>
-        {errors.submit && <p className="text-red-400 text-sm">{errors.submit}</p>}
+        {errors.submit && <p className="text-red-400 text-sm mt-1">{errors.submit}</p>}
         <Button type="submit" fullWidth loading={loading}>
-          Login
+          Verify Voter ID
         </Button>
       </form>
       <p className="mt-4 text-center text-slate-500 text-sm">
-        Only approved voters can login. Contact your admin for access.
+        Only registered and approved voters can login. Face biometric checks apply.
       </p>
     </Card>
   );

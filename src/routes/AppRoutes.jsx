@@ -6,6 +6,7 @@ import ProtectedRoute from '../components/ProtectedRoute';
 import Landing from '../pages/Landing';
 import Login from '../pages/user/Login';
 import UserDashboard from '../pages/user/UserDashboard';
+import FaceVerification from '../pages/user/FaceVerification';
 
 import AdminLogin from '../pages/admin/AdminLogin';
 import AdminDashboard from '../pages/admin/AdminDashboard';
@@ -37,6 +38,7 @@ export default function AppRoutes() {
 
         <Route element={<AuthLayout />}>
           <Route path="/login" element={<Login />} />
+          <Route path="/face-verification" element={<FaceVerification />} />
           <Route path="/admin/login" element={<AdminLogin />} />
         </Route>
 

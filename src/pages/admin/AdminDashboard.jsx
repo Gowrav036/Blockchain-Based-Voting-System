@@ -1,25 +1,53 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useVoting } from '../../context/VotingContext';
-import { useApprovedUsers } from '../../context/ApprovedUsersContext';
 import Card from '../../components/Card';
 import Button from '../../components/Button';
 import StatusBadge from '../../components/StatusBadge';
 import toast from 'react-hot-toast';
-import { addCandidate as blockchainAddCandidate } from '../../services/blockchain';
 
 export default function AdminDashboard() {
   const { candidates, electionActive, toggleElection, addCandidate, deleteCandidate, getResults } = useVoting();
-  const { approvedUsers, addApprovedUser, removeApprovedUser } = useApprovedUsers();
+  
+  // Voter state management linked to MongoDB via Express
+  const [approvedUsers, setApprovedUsers] = useState([]);
   const [showAddForm, setShowAddForm] = useState(false);
   const [showAddVoterForm, setShowAddVoterForm] = useState(false);
+  
+  // Candidates Form state
   const [formData, setFormData] = useState({ name: '', party: '', manifesto: '' });
-  const [voterFormData, setVoterFormData] = useState({ name: '', email: '', password: '' });
   const [loading, setLoading] = useState(false);
-  const [voterLoading, setVoterLoading] = useState(false);
   const [errors, setErrors] = useState({});
-  const [voterErrors, setVoterErrors] = useState({});
 
-  const validate = () => {
+  // Voter registration state (10 webcam images)
+  const [voterFormData, setVoterFormData] = useState({ voterId: '', name: '', dob: '', mobile: '', walletAddress: '' });
+  const [voterErrors, setVoterErrors] = useState({});
+  const [cameraActive, setCameraActive] = useState(false);
+  const [capturedFrames, setCapturedFrames] = useState([]);
+  const [captureProgress, setCaptureProgress] = useState(0);
+  const [registerLoading, setRegisterLoading] = useState(false);
+
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+
+  // Fetch registered voters from Express backend
+  const fetchVoters = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/auth/voters');
+      if (response.ok) {
+        const data = await response.json();
+        setApprovedUsers(data);
+      }
+    } catch (err) {
+      console.error('Failed to load voters:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchVoters();
+  }, []);
+
+  const validateCandidate = () => {
     const err = {};
     if (!formData.name.trim()) err.name = 'Name is required';
     if (!formData.party.trim()) err.party = 'Party is required';
@@ -29,15 +57,25 @@ export default function AdminDashboard() {
 
   const handleAddCandidate = async (e) => {
     e.preventDefault();
-    if (!validate()) return;
+    if (!validateCandidate()) return;
 
     setLoading(true);
     try {
-      await blockchainAddCandidate(formData);
-      addCandidate(formData);
-      setFormData({ name: '', party: '', manifesto: '' });
-      setShowAddForm(false);
-      toast.success('Candidate added successfully!');
+      // Create candidate on backend
+      const response = await fetch('http://localhost:5000/api/vote/candidates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData)
+      });
+      if (response.ok) {
+        const newCand = await response.json();
+        addCandidate(newCand); // Sync with context
+        setFormData({ name: '', party: '', manifesto: '' });
+        setShowAddForm(false);
+        toast.success('Candidate added successfully!');
+      } else {
+        toast.error('Failed to create candidate on server');
+      }
     } catch {
       toast.error('Failed to add candidate');
     } finally {
@@ -45,41 +83,156 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleDelete = (id) => {
+  const handleDeleteCandidate = async (id) => {
     if (window.confirm('Are you sure you want to delete this candidate?')) {
-      deleteCandidate(id);
-      toast.success('Candidate deleted');
+      try {
+        const response = await fetch(`http://localhost:5000/api/vote/candidates/${id}`, {
+          method: 'DELETE'
+        });
+        if (response.ok) {
+          deleteCandidate(id); // Sync with context
+          toast.success('Candidate deleted');
+        }
+      } catch (err) {
+        toast.error('Failed to delete candidate');
+      }
     }
   };
 
   const validateVoter = () => {
     const err = {};
+    if (!voterFormData.voterId.trim()) err.voterId = 'Voter ID is required';
     if (!voterFormData.name.trim()) err.name = 'Name is required';
-    if (!voterFormData.email.trim()) err.email = 'Email is required';
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(voterFormData.email)) err.email = 'Invalid email format';
-    if (!voterFormData.password) err.password = 'Password is required';
-    else if (voterFormData.password.length < 6) err.password = 'Password must be at least 6 characters';
+    if (!voterFormData.dob) err.dob = 'DOB is required';
+    if (!voterFormData.mobile.trim()) err.mobile = 'Mobile number is required';
+    if (!voterFormData.walletAddress.trim()) err.walletAddress = 'Wallet Address is required';
+    else if (!/^0x[a-fA-F0-9]{40}$/.test(voterFormData.walletAddress.trim())) err.walletAddress = 'Invalid Ethereum wallet address format';
+    
     setVoterErrors(err);
     return Object.keys(err).length === 0;
   };
 
-  const handleAddVoter = (e) => {
-    e.preventDefault();
-    if (!validateVoter()) return;
-    const result = addApprovedUser(voterFormData);
-    if (result.success) {
-      setVoterFormData({ name: '', email: '', password: '' });
-      setShowAddVoterForm(false);
-      toast.success('Voter approved! They can now login and vote.');
-    } else {
-      toast.error(result.error);
+  // Start webcam for biometric enrollment
+  const startCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 300, height: 300, facingMode: 'user' },
+        audio: false
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+      setCameraActive(true);
+      setCapturedFrames([]);
+      setCaptureProgress(0);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to access webcam for enrollment.');
     }
   };
 
-  const handleRemoveVoter = (id) => {
-    if (window.confirm('Remove this voter from approved list?')) {
-      removeApprovedUser(id);
-      toast.success('Voter removed');
+  // Stop webcam
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+  };
+
+  // Automated 10-frame capture workflow
+  const captureBiometrics = () => {
+    if (!videoRef.current || !canvasRef.current) return;
+    
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const context = canvas.getContext('2d');
+    
+    const frames = [];
+    let count = 0;
+    
+    const interval = setInterval(() => {
+      if (count >= 10) {
+        clearInterval(interval);
+        setCapturedFrames(frames);
+        stopCamera();
+        toast.success('Successfully captured 10 face frames!');
+        return;
+      }
+      
+      // Capture square frame
+      const size = Math.min(video.videoWidth, video.videoHeight);
+      const startX = (video.videoWidth - size) / 2;
+      const startY = (video.videoHeight - size) / 2;
+      
+      canvas.width = 400;
+      canvas.height = 400;
+      context.drawImage(video, startX, startY, size, size, 0, 0, 400, 400);
+      
+      const frameBase64 = canvas.toDataURL('image/jpeg', 0.95);
+      frames.push(frameBase64);
+      
+      count++;
+      setCaptureProgress(count * 10);
+    }, 300); // 300ms interval between captures
+  };
+
+  const handleAddVoter = async (e) => {
+    e.preventDefault();
+    if (!validateVoter()) return;
+    if (capturedFrames.length !== 10) {
+      toast.error('Face biometric capture is incomplete. Please capture 10 webcam images.');
+      return;
+    }
+
+    setRegisterLoading(true);
+    try {
+      const response = await fetch('http://localhost:5000/api/auth/register-face', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...voterFormData,
+          webcamImages: capturedFrames
+        })
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        toast.success('Voter successfully registered with face biometrics!');
+        setVoterFormData({ voterId: '', name: '', dob: '', mobile: '', walletAddress: '' });
+        setCapturedFrames([]);
+        setCaptureProgress(0);
+        setShowAddVoterForm(false);
+        fetchVoters(); // Refresh voters list
+      } else {
+        toast.error(data.message || 'Registration failed');
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error('Connection to backend server failed');
+    } finally {
+      setRegisterLoading(false);
+    }
+  };
+
+  const handleRemoveVoter = async (voterId) => {
+    if (window.confirm(`Remove voter ${voterId} from the database?`)) {
+      try {
+        const response = await fetch(`http://localhost:5000/api/auth/voters/${voterId}`, {
+          method: 'DELETE'
+        });
+        if (response.ok) {
+          toast.success('Voter biometric details removed successfully');
+          fetchVoters();
+        }
+      } catch (err) {
+        toast.error('Failed to remove voter');
+      }
     }
   };
 
@@ -118,6 +271,7 @@ export default function AdminDashboard() {
         </Card>
       </div>
 
+      {/* Candidates Section */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <h2 className="text-lg font-semibold text-white">Candidates</h2>
         <Button onClick={() => setShowAddForm(!showAddForm)} variant="secondary">
@@ -178,7 +332,7 @@ export default function AdminDashboard() {
             </div>
             <Button
               variant="danger"
-              onClick={() => handleDelete(candidate.id)}
+              onClick={() => handleDeleteCandidate(candidate.id)}
               className="shrink-0"
             >
               Delete
@@ -187,75 +341,164 @@ export default function AdminDashboard() {
         ))}
       </div>
 
+      {/* Voters Management Section */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
-        <h2 className="text-lg font-semibold text-white">Approved Voters</h2>
-        <Button onClick={() => setShowAddVoterForm(!showAddVoterForm)} variant="secondary">
-          {showAddVoterForm ? 'Cancel' : 'Add Voter'}
+        <h2 className="text-lg font-semibold text-white">Registered Voters (Face biometrics enrolled)</h2>
+        <Button onClick={() => {
+          setShowAddVoterForm(!showAddVoterForm);
+          stopCamera();
+        }} variant="secondary">
+          {showAddVoterForm ? 'Cancel' : 'Register New Voter'}
         </Button>
       </div>
 
       {showAddVoterForm && (
         <Card className="mb-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Add Approved Voter</h3>
-          <p className="text-slate-400 text-sm mb-4">Add voters who are allowed to login and cast a vote.</p>
+          <h3 className="text-lg font-semibold text-white mb-4">Add Voter & Capture Biometrics</h3>
+          <p className="text-slate-400 text-sm mb-4">Enter voter details, enable camera, and capture face embeddings.</p>
           <form onSubmit={handleAddVoter} className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-1">Voter ID</label>
+                <input
+                  type="text"
+                  value={voterFormData.voterId}
+                  onChange={(e) => setVoterFormData({ ...voterFormData, voterId: e.target.value })}
+                  className="w-full px-4 py-2.5 rounded-lg bg-slate-800 border border-slate-600 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  placeholder="VOTER-12345"
+                />
+                {voterErrors.voterId && <p className="text-red-400 text-sm mt-1">{voterErrors.voterId}</p>}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-1">Full Name</label>
+                <input
+                  type="text"
+                  value={voterFormData.name}
+                  onChange={(e) => setVoterFormData({ ...voterFormData, name: e.target.value })}
+                  className="w-full px-4 py-2.5 rounded-lg bg-slate-800 border border-slate-600 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  placeholder="John Doe"
+                />
+                {voterErrors.name && <p className="text-red-400 text-sm mt-1">{voterErrors.name}</p>}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-1">Date of Birth</label>
+                <input
+                  type="date"
+                  value={voterFormData.dob}
+                  onChange={(e) => setVoterFormData({ ...voterFormData, dob: e.target.value })}
+                  className="w-full px-4 py-2.5 rounded-lg bg-slate-800 border border-slate-600 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+                {voterErrors.dob && <p className="text-red-400 text-sm mt-1">{voterErrors.dob}</p>}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-1">Mobile</label>
+                <input
+                  type="text"
+                  value={voterFormData.mobile}
+                  onChange={(e) => setVoterFormData({ ...voterFormData, mobile: e.target.value })}
+                  className="w-full px-4 py-2.5 rounded-lg bg-slate-800 border border-slate-600 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  placeholder="9876543210"
+                />
+                {voterErrors.mobile && <p className="text-red-400 text-sm mt-1">{voterErrors.mobile}</p>}
+              </div>
+            </div>
+
             <div>
-              <label className="block text-sm font-medium text-slate-400 mb-1">Full Name</label>
+              <label className="block text-sm font-medium text-slate-400 mb-1">Wallet Address</label>
               <input
                 type="text"
-                value={voterFormData.name}
-                onChange={(e) => setVoterFormData({ ...voterFormData, name: e.target.value })}
+                value={voterFormData.walletAddress}
+                onChange={(e) => setVoterFormData({ ...voterFormData, walletAddress: e.target.value })}
                 className="w-full px-4 py-2.5 rounded-lg bg-slate-800 border border-slate-600 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                placeholder="John Doe"
+                placeholder="0x71C7656EC7ab88b098defB751B7401B5f6d8976F"
               />
-              {voterErrors.name && <p className="text-red-400 text-sm mt-1">{voterErrors.name}</p>}
+              {voterErrors.walletAddress && <p className="text-red-400 text-sm mt-1">{voterErrors.walletAddress}</p>}
             </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-400 mb-1">Email</label>
-              <input
-                type="email"
-                value={voterFormData.email}
-                onChange={(e) => setVoterFormData({ ...voterFormData, email: e.target.value })}
-                className="w-full px-4 py-2.5 rounded-lg bg-slate-800 border border-slate-600 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                placeholder="voter@example.com"
-              />
-              {voterErrors.email && <p className="text-red-400 text-sm mt-1">{voterErrors.email}</p>}
+
+            {/* Webcam capture section */}
+            <div className="border border-slate-700 bg-slate-900/60 p-4 rounded-xl flex flex-col md:flex-row items-center gap-5">
+              <div className="relative w-full max-w-[200px] aspect-square rounded-lg border border-slate-600 bg-slate-950 overflow-hidden flex items-center justify-center">
+                {cameraActive ? (
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    className="w-full h-full object-cover scale-x-[-1]"
+                  />
+                ) : (
+                  <div className="text-xs text-slate-500 text-center p-4">Camera inactive</div>
+                )}
+                <canvas ref={canvasRef} className="hidden" />
+              </div>
+
+              <div className="flex-1 space-y-3 w-full">
+                <p className="text-xs text-slate-400">
+                  Biometric Face Enrollment collects 10 face frames from the webcam to compute the voter's mathematical face vector.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {!cameraActive ? (
+                    <Button type="button" onClick={startCamera} size="sm" variant="secondary">
+                      Activate Camera
+                    </Button>
+                  ) : (
+                    <>
+                      <Button type="button" onClick={captureBiometrics} size="sm" variant="primary">
+                        Capture Biometrics (10 Frames)
+                      </Button>
+                      <Button type="button" onClick={stopCamera} size="sm" variant="danger">
+                        Deactivate
+                      </Button>
+                    </>
+                  )}
+                </div>
+
+                {/* Progress bar */}
+                {captureProgress > 0 && (
+                  <div className="space-y-1">
+                    <div className="w-full bg-slate-800 rounded-full h-2">
+                      <div className="bg-emerald-400 h-2 rounded-full transition-all duration-200" style={{ width: `${captureProgress}%` }} />
+                    </div>
+                    <p className="text-[10px] text-emerald-400 font-semibold">
+                      {captureProgress === 100 ? 'Captured 10/10 frames' : `Capturing frames: ${captureProgress}%`}
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-400 mb-1">Password</label>
-              <input
-                type="password"
-                value={voterFormData.password}
-                onChange={(e) => setVoterFormData({ ...voterFormData, password: e.target.value })}
-                className="w-full px-4 py-2.5 rounded-lg bg-slate-800 border border-slate-600 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                placeholder="Min 6 characters"
-              />
-              {voterErrors.password && <p className="text-red-400 text-sm mt-1">{voterErrors.password}</p>}
-            </div>
-            <Button type="submit">Add Voter</Button>
+
+            <Button type="submit" loading={registerLoading} fullWidth>
+              Register & Save Biometric Profile
+            </Button>
           </form>
         </Card>
       )}
 
+      {/* Voters List */}
       <div className="grid gap-4 mb-8">
         {approvedUsers.map((voter) => (
-          <Card key={voter.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <Card key={voter.voterId} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
               <h3 className="text-lg font-semibold text-white">{voter.name}</h3>
-              <p className="text-slate-400 text-sm">{voter.email}</p>
+              <p className="text-slate-400 text-sm">Voter ID: {voter.voterId}</p>
+              <p className="text-slate-400 text-sm">DOB: {voter.dob} · Mobile: {voter.mobile}</p>
+              <p className="text-xs text-slate-500 mt-1 font-mono break-all">Wallet: {voter.walletAddress}</p>
             </div>
-            <Button variant="danger" onClick={() => handleRemoveVoter(voter.id)} className="shrink-0">
+            <Button variant="danger" onClick={() => handleRemoveVoter(voter.voterId)} className="shrink-0">
               Remove
             </Button>
           </Card>
         ))}
         {approvedUsers.length === 0 && !showAddVoterForm && (
           <Card>
-            <p className="text-slate-400 text-center">No approved voters yet. Add voters to allow them to login and vote.</p>
+            <p className="text-slate-400 text-center">No voters registered. Add voters to enroll their face biometrics and permit them to vote.</p>
           </Card>
         )}
       </div>
 
+      {/* Voting Results */}
       <Card>
         <h2 className="text-lg font-semibold text-white mb-4">Voting Results</h2>
         <div className="space-y-3">
